@@ -1,22 +1,21 @@
 using System.ComponentModel.DataAnnotations;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Identity;
+using BCrypt.Net;
+using BC = BCrypt.Net.BCrypt;
 
 public sealed class UserAccountService : IUserAccountService
 {
+    private const int BCryptWorkFactor = 11;
     private readonly IUserStore _userStore;
-    private readonly IPasswordHasher<StoredUser> _passwordHasher;
-    private readonly StoredUser _dummyUser;
+    private readonly IPasswordHasher<StoredUser> _legacyPasswordHasher;
     private readonly string _dummyPasswordHash;
 
     public UserAccountService(IUserStore userStore, IPasswordHasher<StoredUser> passwordHasher)
     {
         _userStore = userStore;
-        _passwordHasher = passwordHasher;
-        _dummyUser = new StoredUser(0, string.Empty, string.Empty, null, "User");
-        _dummyPasswordHash = passwordHasher.HashPassword(
-            _dummyUser,
-            Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
+        _legacyPasswordHasher = passwordHasher;
+        _dummyPasswordHash = HashPassword(Convert.ToBase64String(RandomNumberGenerator.GetBytes(32)));
     }
 
     public async Task<UserResponse> RegisterAsync(
@@ -25,8 +24,7 @@ public sealed class UserAccountService : IUserAccountService
         string password,
         CancellationToken cancellationToken)
     {
-        var user = new StoredUser(0, username, email, null, "User");
-        var passwordHash = _passwordHasher.HashPassword(user, password);
+        var passwordHash = HashPassword(password);
         return await _userStore.CreateAsync(username, email, passwordHash, cancellationToken);
     }
 
@@ -38,21 +36,22 @@ public sealed class UserAccountService : IUserAccountService
         var user = await _userStore.GetByUsernameAsync(username, cancellationToken);
         if (user?.PasswordHash is not { } passwordHash)
         {
-            _ = _passwordHasher.VerifyHashedPassword(_dummyUser, _dummyPasswordHash, password);
+            _ = BC.EnhancedVerify(password, _dummyPasswordHash, HashType.SHA384);
             return null;
         }
 
-        var result = _passwordHasher.VerifyHashedPassword(user, passwordHash, password);
-        if (result == PasswordVerificationResult.Failed)
-            return null;
-
-        if (result == PasswordVerificationResult.SuccessRehashNeeded)
+        if (passwordHash.StartsWith("$2", StringComparison.Ordinal))
         {
-            var upgradedHash = _passwordHasher.HashPassword(user, password);
-            await _userStore.UpdatePasswordHashAsync(user.UserId, upgradedHash, cancellationToken);
+            return BC.EnhancedVerify(password, passwordHash, HashType.SHA384) ? user : null;
         }
 
-        return user;
+        var legacyResult = _legacyPasswordHasher.VerifyHashedPassword(user, passwordHash, password);
+        if (legacyResult == PasswordVerificationResult.Failed)
+            return null;
+
+        var upgradedHash = HashPassword(password);
+        await _userStore.UpdatePasswordHashAsync(user.UserId, upgradedHash, cancellationToken);
+        return user with { PasswordHash = upgradedHash };
     }
 
     public async Task EnsureBootstrapAdminAsync(
@@ -74,10 +73,15 @@ public sealed class UserAccountService : IUserAccountService
         if (password.Length is < 12 or > 128)
             throw new InvalidOperationException("The bootstrap administrator password must be 12 to 128 characters.");
 
-        var user = new StoredUser(0, username, email, null, "Admin");
-        var passwordHash = _passwordHasher.HashPassword(user, password);
+        var passwordHash = HashPassword(password);
         await _userStore.CreateBootstrapAdminAsync(username, email, passwordHash, cancellationToken);
     }
+
+    private static string HashPassword(string password) =>
+        BC.EnhancedHashPassword(
+            password,
+            BCryptWorkFactor,
+            HashType.SHA384);
 
     private static string SanitizeUsername(string username) =>
         string.Concat(username.Where(character =>

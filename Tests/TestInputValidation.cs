@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Net.Http.Headers;
+using Microsoft.AspNetCore.Identity;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
@@ -117,7 +118,8 @@ public sealed class TestInputValidation
 
         var storedUser = await _factory.Services.GetRequiredService<IUserStore>()
             .GetByUsernameAsync(username, CancellationToken.None);
-        Assert.That(storedUser!.PasswordHash, Is.Not.EqualTo(password));
+        Assert.That(storedUser!.PasswordHash, Does.StartWith("$2"));
+        Assert.That(storedUser.PasswordHash, Is.Not.EqualTo(password));
         Assert.That(storedUser.Role, Is.EqualTo("User"));
 
         var login = await LoginAsync(_client, username, password);
@@ -128,6 +130,24 @@ public sealed class TestInputValidation
         using var userClient = CreateAuthenticatedClient(login.AccessToken);
         var ownProfile = await userClient.GetAsync($"/users/{registeredUser.UserId}");
         Assert.That(ownProfile.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+    }
+
+    [Test]
+    public async Task SamePasswordProducesDifferentStoredHashes()
+    {
+        const string password = "Shared-password-123!";
+        Assert.That((await SubmitAsync("salt-user-one", "salt-one@example.com", password)).StatusCode,
+            Is.EqualTo(HttpStatusCode.Created));
+        Assert.That((await SubmitAsync("salt-user-two", "salt-two@example.com", password)).StatusCode,
+            Is.EqualTo(HttpStatusCode.Created));
+
+        var userStore = _factory.Services.GetRequiredService<IUserStore>();
+        var firstUser = await userStore.GetByUsernameAsync("salt-user-one", CancellationToken.None);
+        var secondUser = await userStore.GetByUsernameAsync("salt-user-two", CancellationToken.None);
+
+        Assert.That(firstUser!.PasswordHash, Does.StartWith("$2"));
+        Assert.That(secondUser!.PasswordHash, Does.StartWith("$2"));
+        Assert.That(firstUser.PasswordHash, Is.Not.EqualTo(secondUser.PasswordHash));
     }
 
     [Test]
@@ -145,6 +165,57 @@ public sealed class TestInputValidation
         });
 
         Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.Unauthorized));
+    }
+
+    [Test]
+    public async Task LongBcryptPasswordsAreNotTruncatedAt72Bytes()
+    {
+        const string username = "long-password-user";
+        var correctPassword = new string('a', 72) + "-correct";
+        var truncatedEquivalent = new string('a', 72) + "-wrong";
+        var registration = await SubmitAsync(
+            username,
+            "long-password@example.com",
+            correctPassword);
+        Assert.That(registration.StatusCode, Is.EqualTo(HttpStatusCode.Created));
+
+        using var anonymousClient = _factory.CreateClient();
+        var wrongPasswordResponse = await anonymousClient.PostAsJsonAsync("/auth/login", new LoginRequest
+        {
+            Username = username,
+            Password = truncatedEquivalent
+        });
+        Assert.That(wrongPasswordResponse.StatusCode, Is.EqualTo(HttpStatusCode.Unauthorized));
+
+        var correctLogin = await LoginAsync(_client, username, correctPassword);
+        Assert.That(correctLogin.User.Username, Is.EqualTo(username));
+    }
+
+    [Test]
+    public async Task LegacyPasswordHashIsUpgradedToBcryptAfterSuccessfulLogin()
+    {
+        const string username = "legacy-password-user";
+        const string password = "Legacy-password-123!";
+        var legacyHasher = _factory.Services.GetRequiredService<IPasswordHasher<StoredUser>>();
+        var legacyUser = new StoredUser(0, username, "legacy@example.com", null, "User");
+        var legacyHash = legacyHasher.HashPassword(legacyUser, password);
+        var userStore = _factory.Services.GetRequiredService<IUserStore>();
+
+        await userStore.CreateAsync(
+            username,
+            legacyUser.Email,
+            legacyHash,
+            CancellationToken.None);
+
+        var accountService = _factory.Services.GetRequiredService<IUserAccountService>();
+        var authenticatedUser = await accountService.ValidateCredentialsAsync(
+            username,
+            password,
+            CancellationToken.None);
+        var upgradedUser = await userStore.GetByUsernameAsync(username, CancellationToken.None);
+
+        Assert.That(authenticatedUser, Is.Not.Null);
+        Assert.That(upgradedUser!.PasswordHash, Does.StartWith("$2"));
     }
 
     [Test]
