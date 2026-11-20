@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
 using NUnit.Framework;
 
 [TestFixture]
@@ -27,7 +28,31 @@ public sealed class TestInputValidation
     }
 
     [Test]
-    public async Task SqlInjectionPayloadIsStoredAsDataAndDoesNotBreakQueries()
+    public async Task SqlInjectionPayloadPassedToStoreIsBoundAsData()
+    {
+        const string injectedUsername = "x'); DROP TABLE Users;--";
+        var userStore = _factory.Services.GetRequiredService<IUserStore>();
+
+        var existingUser = await userStore.CreateAsync(
+            "existing-user",
+            "existing@example.com",
+            CancellationToken.None);
+        var injectedUser = await userStore.CreateAsync(
+            injectedUsername,
+            "attacker@example.com",
+            CancellationToken.None);
+
+        var response = await _client.GetAsync($"/users/{injectedUser.UserId}");
+        Assert.That(response.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+        var fetched = await response.Content.ReadFromJsonAsync<UserResponse>();
+        Assert.That(fetched!.Username, Is.EqualTo(injectedUsername));
+
+        var existingResponse = await _client.GetAsync($"/users/{existingUser.UserId}");
+        Assert.That(existingResponse.StatusCode, Is.EqualTo(HttpStatusCode.OK));
+    }
+
+    [Test]
+    public async Task SqlInjectionCharactersAreSanitizedBeforePersistence()
     {
         const string injectedUsername = "x'); DROP TABLE Users;--";
 
