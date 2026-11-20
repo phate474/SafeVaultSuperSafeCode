@@ -1,0 +1,23 @@
+@SecurityRealWorldExample_HostAddress = http://localhost:5181
+
+### Create user using the supplied form fields
+POST {{SecurityRealWorldExample_HostAddress}}/submit
+Content-Type: application/x-www-form-urlencoded
+
+username=alice&email=alice%40example.com
+
+###
+
+### Reject invalid email input
+POST {{SecurityRealWorldExample_HostAddress}}/submit
+Content-Type: application/x-www-form-urlencoded
+
+username=alice&email=not-an-email
+
+### Get a created user (replace 1 with the returned ID)
+GET {{SecurityRealWorldExample_HostAddress}}/users/1
+Accept: application/json
+
+### The existing sample endpoint
+GET {{SecurityRealWorldExample_HostAddress}}/weatherforecast/
+Accept: application/json
