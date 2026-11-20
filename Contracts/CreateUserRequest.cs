@@ -8,4 +8,7 @@ public sealed record CreateUserRequest
 
     [Required, EmailAddress, StringLength(254)]
     public required string Email { get; init; }
+
+    [Required, StringLength(128, MinimumLength = 12)]
+    public required string Password { get; init; }
 }

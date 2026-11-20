@@ -1,4 +1,6 @@
 using System.ComponentModel.DataAnnotations;
+using System.Globalization;
+using System.IdentityModel.Tokens.Jwt;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 public static class UserEndpoints
@@ -7,7 +9,7 @@ public static class UserEndpoints
     {
         app.MapPost("/submit", async Task<Results<Created<UserResponse>, ValidationProblem>> (
             HttpRequest httpRequest,
-            IUserStore userStore,
+            IUserAccountService userAccountService,
             CancellationToken cancellationToken) =>
         {
             if (!httpRequest.HasFormContentType)
@@ -22,7 +24,8 @@ public static class UserEndpoints
             var request = new CreateUserRequest
             {
                 Username = SanitizeUsername(form["username"].ToString()).Trim(),
-                Email = form["email"].ToString().Trim()
+                Email = form["email"].ToString().Trim(),
+                Password = form["password"].ToString()
             };
 
             var validationResults = new List<ValidationResult>();
@@ -43,29 +46,84 @@ public static class UserEndpoints
                 });
             }
 
-            var user = await userStore.CreateAsync(request.Username, request.Email, cancellationToken);
+            var user = await userAccountService.RegisterAsync(
+                request.Username,
+                request.Email,
+                request.Password,
+                cancellationToken);
             return TypedResults.Created($"/users/{user.UserId}", user);
         })
+        .AllowAnonymous()
         .WithName("CreateUser")
-        .WithSummary("Create a user from submitted form data")
-        .WithDescription("Validates submitted fields and stores them using parameterized SQL.")
+        .WithSummary("Register a user")
+        .WithDescription("Validates form fields and stores a one-way password hash.")
         .Accepts<CreateUserRequest>("application/x-www-form-urlencoded")
         .Produces<UserResponse>(StatusCodes.Status201Created)
         .ProducesValidationProblem();
 
-        app.MapGet("/users/{userId:int}", async Task<Results<Ok<UserResponse>, NotFound>> (
-            int userId,
-            IUserStore userStore,
+        app.MapPost("/auth/login", async Task<Results<Ok<LoginResponse>, UnauthorizedHttpResult>> (
+            LoginRequest request,
+            IUserAccountService userAccountService,
+            JwtTokenService tokenService,
             CancellationToken cancellationToken) =>
         {
+            var normalizedUsername = SanitizeUsername(request.Username).Trim();
+            if (!string.Equals(normalizedUsername, request.Username.Trim(), StringComparison.Ordinal))
+                return TypedResults.Unauthorized();
+
+            var user = await userAccountService.ValidateCredentialsAsync(
+                normalizedUsername,
+                request.Password,
+                cancellationToken);
+            return user is null
+                ? TypedResults.Unauthorized()
+                : TypedResults.Ok(tokenService.CreateToken(user));
+        })
+        .AllowAnonymous()
+        .WithName("Login")
+        .WithSummary("Authenticate and issue a bearer token")
+        .WithDescription("Returns a short-lived JWT when the supplied credentials are valid.")
+        .Produces<LoginResponse>(StatusCodes.Status200OK)
+        .Produces(StatusCodes.Status401Unauthorized)
+        .ProducesValidationProblem();
+
+        app.MapGet("/users/{userId:int}", async Task<Results<Ok<UserResponse>, NotFound, ForbidHttpResult>> (
+            int userId,
+            IUserStore userStore,
+            System.Security.Claims.ClaimsPrincipal principal,
+            CancellationToken cancellationToken) =>
+        {
+            if (!principal.IsInRole("Admin") &&
+                !string.Equals(
+                    principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value,
+                    userId.ToString(CultureInfo.InvariantCulture),
+                    StringComparison.Ordinal))
+            {
+                return TypedResults.Forbid();
+            }
+
             var user = await userStore.GetByIdAsync(userId, cancellationToken);
             return user is null ? TypedResults.NotFound() : TypedResults.Ok(user);
         })
+        .RequireAuthorization()
         .WithName("GetUserById")
         .WithSummary("Get a user by ID")
-        .WithDescription("Returns a user record as JSON.")
+        .WithDescription("Returns a user record to its owner or an administrator.")
         .Produces<UserResponse>(StatusCodes.Status200OK)
-        .Produces(StatusCodes.Status404NotFound);
+        .Produces(StatusCodes.Status404NotFound)
+        .Produces(StatusCodes.Status403Forbidden);
+
+        app.MapGet("/admin/users", async Task<Ok<IReadOnlyList<UserResponse>>> (
+            IUserStore userStore,
+            CancellationToken cancellationToken) =>
+                TypedResults.Ok(await userStore.GetAllAsync(cancellationToken)))
+            .RequireAuthorization(policy => policy.RequireRole("Admin"))
+            .WithName("GetAllUsersForAdministrators")
+            .WithSummary("List users for administrators")
+            .WithDescription("Returns user profile data without password hashes.")
+            .Produces<IReadOnlyList<UserResponse>>(StatusCodes.Status200OK)
+            .Produces(StatusCodes.Status401Unauthorized)
+            .Produces(StatusCodes.Status403Forbidden);
     }
 
     private static Dictionary<string, string[]> ToErrors(IEnumerable<ValidationResult> validationResults) =>

@@ -1,23 +1,29 @@
 @SecurityRealWorldExample_HostAddress = http://localhost:5181
+@accessToken = replace-with-token-from-login
 
-### Create user using the supplied form fields
+### Register user; store a high-entropy password
 POST {{SecurityRealWorldExample_HostAddress}}/submit
 Content-Type: application/x-www-form-urlencoded
 
-username=alice&email=alice%40example.com
+username=alice&email=alice%40example.com&password=replace-with-a-strong-password
 
 ###
 
-### Reject invalid email input
-POST {{SecurityRealWorldExample_HostAddress}}/submit
-Content-Type: application/x-www-form-urlencoded
+### Login to receive a short-lived access token
+POST {{SecurityRealWorldExample_HostAddress}}/auth/login
+Content-Type: application/json
 
-username=alice&email=not-an-email
+{
+  "username": "alice",
+  "password": "replace-with-the-registration-password"
+}
 
-### Get a created user (replace 1 with the returned ID)
+### Get the authenticated user's own record
 GET {{SecurityRealWorldExample_HostAddress}}/users/1
 Accept: application/json
+Authorization: Bearer {{accessToken}}
 
-### The existing sample endpoint
-GET {{SecurityRealWorldExample_HostAddress}}/weatherforecast/
+### Administrative user list (requires an Admin token)
+GET {{SecurityRealWorldExample_HostAddress}}/admin/users
 Accept: application/json
+Authorization: Bearer {{accessToken}}
