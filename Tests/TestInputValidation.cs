@@ -219,7 +219,7 @@ public sealed class TestInputValidation
     }
 
     [Test]
-    public async Task AdminFeatureRequiresAdminRoleAndUserCannotReadAnotherProfile()
+    public async Task RolesAreAssignedAndOnlyAdminsCanAccessAdminFeatures()
     {
         const string username = "regular-user";
         const string password = "Regular-user-password-123!";
@@ -227,6 +227,11 @@ public sealed class TestInputValidation
         Assert.That(registration.StatusCode, Is.EqualTo(HttpStatusCode.Created));
         var regularUser = await ReadUserAsync(registration);
         var regularLogin = await LoginAsync(_client, username, password);
+        var userStore = _factory.Services.GetRequiredService<IUserStore>();
+        var adminAccount = await userStore.GetByUsernameAsync(AdminUsername, CancellationToken.None);
+        var regularAccount = await userStore.GetByUsernameAsync(username, CancellationToken.None);
+        Assert.That(adminAccount!.Role, Is.EqualTo("Admin"));
+        Assert.That(regularAccount!.Role, Is.EqualTo("User"));
 
         using var regularClient = CreateAuthenticatedClient(regularLogin.AccessToken);
         var adminListResponse = await regularClient.GetAsync("/admin/users");
