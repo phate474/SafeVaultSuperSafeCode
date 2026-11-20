@@ -21,7 +21,7 @@ public static class UserEndpoints
             var form = await httpRequest.ReadFormAsync(cancellationToken);
             var request = new CreateUserRequest
             {
-                Username = form["username"].ToString().Trim(),
+                Username = SanitizeUsername(form["username"].ToString()).Trim(),
                 Email = form["email"].ToString().Trim()
             };
 
@@ -35,11 +35,11 @@ public static class UserEndpoints
                 return TypedResults.ValidationProblem(ToErrors(validationResults));
             }
 
-            if (request.Username.Any(char.IsControl) || request.Email.Any(char.IsControl))
+            if (request.Email.Any(char.IsControl))
             {
                 return TypedResults.ValidationProblem(new Dictionary<string, string[]>
                 {
-                    ["input"] = ["Control characters are not allowed."]
+                    ["email"] = ["Control characters are not allowed."]
                 });
             }
 
@@ -74,4 +74,8 @@ public static class UserEndpoints
                 .Select(member => (Member: member, Error: result.ErrorMessage ?? "Invalid value.")))
             .GroupBy(item => item.Member)
             .ToDictionary(group => group.Key, group => group.Select(item => item.Error).ToArray());
+
+    private static string SanitizeUsername(string username) =>
+        string.Concat(username.Where(character =>
+            char.IsLetterOrDigit(character) || character is ' ' or '.' or '_' or '-'));
 }

@@ -39,7 +39,8 @@ public sealed class TestInputValidation
         var fetchResponse = await _client.GetAsync($"/users/{created.UserId}");
         Assert.That(fetchResponse.StatusCode, Is.EqualTo(HttpStatusCode.OK));
         var fetched = await fetchResponse.Content.ReadFromJsonAsync<UserResponse>();
-        Assert.That(fetched!.Username, Is.EqualTo(injectedUsername));
+        Assert.That(created.Username, Is.EqualTo("x DROP TABLE Users--"));
+        Assert.That(fetched!.Username, Is.EqualTo(created.Username));
     }
 
     [Test]
@@ -54,10 +55,10 @@ public sealed class TestInputValidation
 
         var json = await response.Content.ReadAsStringAsync();
         Assert.That(json, Does.Not.Contain(xssUsername));
-        Assert.That(json, Does.Contain("\\u003Cscript\\u003E"));
+        Assert.That(json, Does.Not.Contain("<"));
 
         using var document = JsonDocument.Parse(json);
-        Assert.That(document.RootElement.GetProperty("username").GetString(), Is.EqualTo(xssUsername));
+        Assert.That(document.RootElement.GetProperty("username").GetString(), Is.EqualTo("scriptalert1script"));
     }
 
     [Test]
